@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <optional>
 
 #include "relation.h"
 
@@ -41,6 +42,15 @@ struct SelectInfo {
     constexpr static const char delimiterSQL[] = ", ";
 };
 
+namespace std {
+    template<>
+    struct hash<SelectInfo> {
+        size_t operator()(const SelectInfo& i) const {
+            return hash<int>()(i.binding | (i.col_id << 16));
+        }
+    };
+}
+
 struct FilterInfo {
     enum Comparison : char { Less = '<', Greater = '>', Equal = '=' };
     /// Filter Column
@@ -71,6 +81,18 @@ static const std::vector<FilterInfo::Comparison> comparisonTypes {
     FilterInfo::Comparison::Less, FilterInfo::Comparison::Greater,
     FilterInfo::Comparison::Equal};
 
+struct CombinedFilterInfo {
+    SelectInfo filter_column;
+
+    enum Comparison : char { Less = '<', Greater = '>', Equal = '=' };
+    
+    std::optional<double> equal;
+    std::optional<double> greater;
+    std::optional<double> less;
+
+    bool mergeCondition(FilterInfo::Comparison comparison, double value);
+};
+
 struct PredicateInfo {
     /// Left
     SelectInfo left;
@@ -85,7 +107,19 @@ struct PredicateInfo {
     std::string dumpText();
     /// Dump SQL
     std::string dumpSQL();
-
+    
+    /// Equality operator
+    inline bool operator==(const PredicateInfo &o) const {    
+        return o.left == left && o.right == right;
+    }
+    /// Less Operator
+    inline bool operator<(const PredicateInfo &o) const {
+        if(left < o.left || left == o.left && right < o.right) {
+            return true;
+        } else {
+            return false;
+        }
+    }
     /// The delimiter used in our text format
     static const char delimiter = '&';
     /// The delimiter used in SQL
@@ -102,6 +136,8 @@ private:
     std::vector<FilterInfo> filters_;
     /// The selections
     std::vector<SelectInfo> selections_;
+
+    bool illegal_ = false;
 
 public:
     /// The empty constructor
@@ -143,6 +179,14 @@ public:
         return selections_;
     }
 
+    const bool illegalQuery() const {
+        return illegal_;
+    }
+
+    void setIllegalQuery() {
+        illegal_ = true;
+    }
+
 private:
     /// Parse a single predicate
     void parsePredicate(std::string &raw_predicate);
@@ -150,4 +194,6 @@ private:
     void resolveRelationIds();
 
 };
+
+
 

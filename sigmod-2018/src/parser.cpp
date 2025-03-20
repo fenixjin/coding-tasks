@@ -85,7 +85,11 @@ void QueryInfo::parsePredicate(std::string &raw_predicate) {
                               constant,
                               FilterInfo::Comparison(comp_type));
     } else {
-        predicates_.emplace_back(left_select, parseRelColPair(rel_cols[1]));
+        auto right_select = parseRelColPair(rel_cols[1]);
+        if(right_select < left_select) {
+            std::swap(left_select, right_select);
+        }
+        predicates_.emplace_back(left_select, right_select);
     }
 }
 
@@ -95,6 +99,57 @@ void QueryInfo::parsePredicates(std::string &raw_predicates) {
     splitString(raw_predicates, predicate_strings, '&');
     for (auto &raw_predicate : predicate_strings) {
         parsePredicate(raw_predicate);
+    }
+    // propagate filter to make temp table smaller
+    for(int i = 0; i < filters_.size(); i++) {
+        auto& f = filters_[i];
+        for(auto& predicate : predicates_) {
+            if(f.filter_column == predicate.left) {
+                FilterInfo new_filter{predicate.right, f.constant, f.comparison};
+                if (std::find(filters_.begin(), filters_.end(), new_filter) != filters_.end()) {
+                    filters_.emplace_back(new_filter);
+                }
+            }
+            if(f.filter_column == predicate.right) {
+                FilterInfo new_filter{predicate.left, f.constant, f.comparison};
+                if (std::find(filters_.begin(), filters_.end(), new_filter) != filters_.end()) {
+                    filters_.emplace_back(new_filter);
+                }
+            }
+        }
+    }
+    // combine overlapped predicates and check for contradictory predicates;
+    std::unordered_map<SelectInfo, CombinedFilterInfo> col_2_combinefilters;
+    for(auto& f : filters_) {
+        col_2_combinefilters[f.filter_column];
+        if(!col_2_combinefilters[f.filter_column].mergeCondition(f.comparison, f.constant)) {
+            setIllegalQuery();
+            return;
+        }
+    }
+    filters_.clear();
+
+    // replace filter with optimized value
+    for(auto& [column, combined_filter] : col_2_combinefilters) {
+        if(combined_filter.equal.has_value()){
+            filters_.emplace_back(column, 
+                combined_filter.equal.value(), 
+                FilterInfo::Comparison::Equal
+            );
+        } else {
+            if(combined_filter.greater.has_value()) {
+                filters_.emplace_back(column, 
+                    combined_filter.greater.value(), 
+                    FilterInfo::Comparison::Greater
+                );
+            }
+            if(combined_filter.less.has_value()) {
+                filters_.emplace_back(column, 
+                    combined_filter.less.value(), 
+                    FilterInfo::Comparison::Less
+                );
+            }
+        }
     }
 }
 
@@ -165,6 +220,45 @@ std::string FilterInfo::dumpText() {
 std::string FilterInfo::dumpSQL() {
     return filter_column.dumpSQL() + static_cast<char>(comparison)
            + std::to_string(constant);
+}
+
+bool CombinedFilterInfo::mergeCondition(FilterInfo::Comparison comparison, double value) {
+    if(comparison == FilterInfo::Comparison::Equal) {
+        if(equal.has_value() && value != equal.value()){
+            return false;
+        } else if(greater.has_value() && value <= greater.value()) {
+            return false;
+        } else if(less.has_value() && value <= less.value()) {
+            return false;
+        }
+        equal = value;
+    } else if (comparison == FilterInfo::Comparison::Greater) {
+        if(equal.has_value()){
+            if(value >= equal.value()) {
+                return false;
+            }
+            return true;
+        }
+        if(!greater.has_value() || value > greater.value()) {
+            greater.value() = value;
+        }
+        if(less.has_value() && value >= less.value()){
+            return false;
+        }
+    } else if (comparison == FilterInfo::Comparison::Less) {
+        if(equal.has_value() ) {
+            if(value <= equal.value()){
+                return false;
+            }
+            return true;
+        }
+        if(greater.has_value() && value <= greater.value()) {
+            return false;
+        }
+        if(!less.has_value() || value < less.value()) {
+            less.value() = value;
+        }
+    }
 }
 
 // Dump text format

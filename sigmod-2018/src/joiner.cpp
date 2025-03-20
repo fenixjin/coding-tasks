@@ -69,6 +69,9 @@ std::unique_ptr<Operator> Joiner::addScan(std::set<unsigned> &used_relations,
 
 // Executes a join query
 std::string Joiner::join(QueryInfo &query) {
+    if(query.illegalQuery()) {
+        return "NULL\n";
+    }
     std::set<unsigned> used_relations;
 
     // We always start with the first join predicate and append the other joins
@@ -82,11 +85,16 @@ std::string Joiner::join(QueryInfo &query) {
     root = std::make_unique<Join>(move(left), move(right), firstJoin);
 
     auto predicates_copy = query.predicates();
+    // remove duplicate predicates 
+    std::sort(predicates_copy.begin(), predicates_copy.end());
+    auto last = std::unique(predicates_copy.begin(), predicates_copy.end());
+    predicates_copy.erase(last, predicates_copy.end());
+    
     for (unsigned i = 1; i < predicates_copy.size(); ++i) {
         auto &p_info = predicates_copy[i];
         auto &left_info = p_info.left;
         auto &right_info = p_info.right;
-
+        
         switch (analyzeInputOfJoin(used_relations, left_info, right_info)) {
         case QueryGraphProvides::Left:
             left = move(root);
@@ -120,6 +128,9 @@ std::string Joiner::join(QueryInfo &query) {
     std::stringstream out;
     auto &results = checksum.check_sums();
     for (unsigned i = 0; i < results.size(); ++i) {
+        // there are 2 reasons for sum being 0, 
+        // there are no result 
+        // there are results but the sum is zero.
         out << (checksum.result_size() == 0 ? "NULL" : std::to_string(results[i]));
         if (i < results.size() - 1)
             out << " ";

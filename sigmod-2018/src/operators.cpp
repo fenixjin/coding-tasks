@@ -149,7 +149,7 @@ void Join::run() {
     hash_table_.reserve(left_->result_size() * 2);
     for (uint64_t i = 0, limit = i + left_->result_size(); i != limit; ++i) {
         hash_table_.emplace(left_key_column[i], i);
-    }
+    }   
     // Probe phase
     auto right_key_column = right_input_data[right_col_id];
     for (uint64_t i = 0, limit = i + right_->result_size(); i != limit; ++i) {
@@ -210,6 +210,7 @@ void Checksum::run() {
         input_->require(sInfo);
     }
     input_->run();
+    // returns the materialized results, which is fine and could do things
     auto results = input_->getResults();
 
     for (auto &sInfo : col_info_) {
