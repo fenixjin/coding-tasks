@@ -10,6 +10,9 @@
 #include <vector>
 
 #include "parser.h"
+#include "operators.h"
+
+using namespace std;
 
 namespace {
 
@@ -62,15 +65,15 @@ std::unique_ptr<Operator> Joiner::addScan(std::set<unsigned> &used_relations,
         }
     }
     return !filters.empty() ?
-           std::make_unique<FilterScan>(getRelation(info.rel_id), filters)
-           : std::make_unique<Scan>(getRelation(info.rel_id),
+           std::make_shared<FilterScan>(getRelation(info.rel_id), filters)
+           : std::make_shared<Scan>(getRelation(info.rel_id),
                                     info.binding);
 }
 
 // Executes a join query
-std::string Joiner::join(QueryInfo &query) {
+void Joiner::join(QueryInfo &query, int query_index) {
     if(query.illegalQuery()) {
-        return "NULL\n";
+        return ;
     }
     std::set<unsigned> used_relations;
 
@@ -78,18 +81,22 @@ std::string Joiner::join(QueryInfo &query) {
     // to it (--> left-deep join trees). You might want to choose a smarter
     // join ordering ...
     const auto &firstJoin = query.predicates()[0];
-    std::unique_ptr<Operator> left, right;
+    std::shared_ptr<Operator> left, right;
     left = addScan(used_relations, firstJoin.left, query);
     right = addScan(used_relations, firstJoin.right, query);
-    std::unique_ptr<Operator>
-    root = std::make_unique<Join>(move(left), move(right), firstJoin);
+    std::shared_ptr<Operator>
+    root = std::make_shared<Join>(left, right, firstJoin);
 
-    auto predicates_copy = query.predicates();
+    left->setParent(root);
+    right->setParent(root);
+
+    auto& predicates_copy = query.predicates();
+
     // remove duplicate predicates 
     std::sort(predicates_copy.begin(), predicates_copy.end());
     auto last = std::unique(predicates_copy.begin(), predicates_copy.end());
     predicates_copy.erase(last, predicates_copy.end());
-    
+
     for (unsigned i = 1; i < predicates_copy.size(); ++i) {
         auto &p_info = predicates_copy[i];
         auto &left_info = p_info.left;
@@ -97,22 +104,24 @@ std::string Joiner::join(QueryInfo &query) {
         
         switch (analyzeInputOfJoin(used_relations, left_info, right_info)) {
         case QueryGraphProvides::Left:
-            left = move(root);
+            left = root;
             right = addScan(used_relations, right_info, query);
-            root = std::make_unique<Join>(move(left), move(right), p_info);
+            root = std::make_shared<Join>(left, right, p_info);
+            left->setParent(root);
+            right->setParent(root);
             break;
         case QueryGraphProvides::Right:
             left = addScan(used_relations,
                            left_info,
                            query);
-            right = move(root);
-            root = std::make_unique<Join>(move(left), move(right), p_info);
+            right = root;
+            root = std::make_shared<Join>(left, right, p_info);
             break;
         case QueryGraphProvides::Both:
             // All relations of this join are already used somewhere else in the
             // query. Thus, we have either a cycle in our join graph or more than
             // one join predicate per join.
-            root = std::make_unique<SelfJoin>(move(root), p_info);
+            root = std::make_shared<SelfJoin>(root, p_info);
             break;
         case QueryGraphProvides::None:
             // Process this predicate later when we can connect it to the other
@@ -122,20 +131,36 @@ std::string Joiner::join(QueryInfo &query) {
         };
     }
 
-    Checksum checksum(move(root), query.selections());
-    checksum.run();
+    std::shared_ptr<Checksum> checksum = std::make_shared<Checksum>(*this, root, query.selections());
+    root->setParent(checksum);
+    asyncJoins[query_index] = checksum;
+    checksum->asyncRun(ioService,query_index);
 
-    std::stringstream out;
-    auto &results = checksum.check_sums();
-    for (unsigned i = 0; i < results.size(); ++i) {
-        // there are 2 reasons for sum being 0, 
-        // there are no result 
-        // there are results but the sum is zero.
-        out << (checksum.result_size() == 0 ? "NULL" : std::to_string(results[i]));
-        if (i < results.size() - 1)
-            out << " ";
+    return;
+}
+
+void Joiner::waitAsyncJoins() {
+    unique_lock<mutex> lk(cvAsyncMutex);
+    if (pendingAsyncJoin > 0)  {
+#ifdef VERBOSE
+        cout << "Joiner::waitAsyncJoins wait" << endl;
+#endif
+        cvAsync.wait(lk); 
+#ifdef VERBOSE
+        cout << "Joiner::waitAsyncJoins wakeup" << endl;
+#endif
     }
-    out << "\n";
-    return out.str();
+}
+
+void Joiner::createAsyncQueryTask(string line)
+{
+	__sync_fetch_and_add(&pendingAsyncJoin, 1);
+    QueryInfo query;
+    query.parseQuery(line);
+    asyncJoins.emplace_back();
+    asyncResults.emplace_back();
+    
+    ioService.post(bind(&Joiner::join, this, query, nextQueryIndex)); 
+    __sync_fetch_and_add(&nextQueryIndex, 1);
 }
 

@@ -3,8 +3,10 @@
 #include "joiner.h"
 #include "parser.h"
 
+using namespace std;
+
 int main(int argc, char *argv[]) {
-    Joiner joiner;
+    Joiner joiner(THREAD_NUM);
 
     // Read join relations
     std::string line;
@@ -18,9 +20,14 @@ int main(int argc, char *argv[]) {
 
     QueryInfo i;
     while (getline(std::cin, line)) {
-        if (line == "F") continue; // End of a batch
-        i.parseQuery(line);
-        std::cout << joiner.join(i);
+        if (line == "F") { // End of a batch
+            joiner.waitAsyncJoins();
+            auto results = joiner.getAsyncJoinResults(); // result strings vector
+            for (auto& result : results)
+                cout << result;
+            continue;
+        } 
+        joiner.createAsyncQueryTask(line);
     }
 
     return 0;

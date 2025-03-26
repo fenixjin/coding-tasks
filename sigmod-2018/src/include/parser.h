@@ -154,6 +154,9 @@ public:
     /// Parse selections [RELATIONS]|[PREDICATES]|[SELECTS]
     void parseQuery(std::string &raw_query);
 
+    void reorderPredicates();
+
+
     /// Dump text format
     std::string dumpText();
     /// Dump SQL
@@ -167,7 +170,7 @@ public:
         return relation_ids_;
     }
     /// The predicates
-    const std::vector<PredicateInfo> &predicates() const {
+    std::vector<PredicateInfo> &predicates() {
         return predicates_;
     }
     /// The filters

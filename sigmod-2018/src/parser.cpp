@@ -191,6 +191,7 @@ void QueryInfo::parseQuery(std::string &raw_query) {
     resolveRelationIds();
 }
 
+
 // Reset query info
 void QueryInfo::clear() {
     relation_ids_.clear();
@@ -260,6 +261,7 @@ bool CombinedFilterInfo::mergeCondition(FilterInfo::Comparison comparison, doubl
         }
     }
 }
+
 
 // Dump text format
 std::string PredicateInfo::dumpText() {

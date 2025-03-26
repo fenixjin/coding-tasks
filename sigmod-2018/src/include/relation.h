@@ -40,10 +40,9 @@ public:
     uint64_t size() const {
         return size_;
     }
+
     /// The join column containing the keys
-    const std::vector<uint64_t *> &columns() const {
-        return columns_;
-    }
+    std::vector<uint64_t*> columns;
 
 private:
     /// Loads data from a file

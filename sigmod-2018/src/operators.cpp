@@ -1,35 +1,66 @@
 #include "operators.h"
-
+#include "joiner.h"
 #include <cassert>
 
 // Get materialized results
-std::vector<uint64_t *> Operator::getResults() {
-    std::vector<uint64_t *> result_vector;
-    for (auto &c : tmp_results_) {
-        result_vector.push_back(c.data());
+std::vector<Column<uint64_t>>& Operator::getResults() {
+    return results;
+}
+
+void Operator::finishAsyncRun(boost::asio::io_service& ioService, bool startParentAsync) {
+    is_stopped = true;
+    if (auto p = parent.lock()) {
+        if (result_size() == 0)
+            p->stop();
+        int pending = __sync_sub_and_fetch(&p->pendingAsyncOperator, 1);
+        assert(pending>=0);
+#ifdef VERBOSE
+    cout << "Operator("<< queryIndex << "," << operatorIndex <<")::finishAsyncRun parent's pending: " << pending << endl;
+#endif
+        if (pending == 0 && startParentAsync) 
+            p->createAsyncTasks(ioService);
+    } else {
+#ifdef VERBOSE
+    cout << "Operator("<< queryIndex << "," << operatorIndex <<")::finishAsyncRun has no parent" << endl;
+#endif
+        // root node
     }
-    return result_vector;
 }
 
 // Require a column and add it to results
-bool Scan::require(SelectInfo info) {
-    if (info.binding != relation_binding_)
+bool Scan::require(SelectInfo info)
+// Require a column and add it to results
+{
+    if (info.binding != relation_binding_)  {
         return false;
-    assert(info.col_id < relation_.columns().size());
-    result_columns_.push_back(relation_.columns()[info.col_id]);
-    select_to_result_col_id_[info] = result_columns_.size() - 1;
+    }
+    assert(info.col_id < relation_.columns.size());
+    if (select_to_result_col_id_.find(info)==select_to_result_col_id_.end()) {
+//        resultColumns.push_back(relation.columns[info.colId]);
+        results.emplace_back(1);
+        infos.push_back(info);
+		select_to_result_col_id_[info]=results.size()-1;
+    }
     return true;
 }
 
-// Run
-void Scan::run() {
-    // Nothing to do
-    result_size_ = relation_.size();
-}
+void Scan::asyncRun(boost::asio::io_service& ioService) {
+    #ifdef VERBOSE
+        cout << "Scan("<< queryIndex << "," << operatorIndex <<")::asyncRun, Task" << endl;
+    #endif
+        pendingAsyncOperator = 0;
+        for (int i = 0; i < infos.size(); i++) {
+            results[i].addTuples(0, relation_.columns[infos[i].col_id], relation_.size());
+            results[i].fix();
+        }
+        result_size_=relation_.size(); 
+        
+        finishAsyncRun(ioService, true);
+    }
 
 // Get materialized results
-std::vector<uint64_t *> Scan::getResults() {
-    return result_columns_;
+std::vector<Column<uint64_t>>& Scan::getResults() {
+    return results;
 }
 
 // Require a column and add it to results
@@ -39,12 +70,148 @@ bool FilterScan::require(SelectInfo info) {
     assert(info.col_id < relation_.columns().size());
     if (select_to_result_col_id_.find(info) == select_to_result_col_id_.end()) {
         // Add to results
-        input_data_.push_back(relation_.columns()[info.col_id]);
-        tmp_results_.emplace_back();
-        unsigned colId = tmp_results_.size() - 1;
-        select_to_result_col_id_[info] = colId;
+        infos.push_back(info);
+        unsigned col_ID = tmp_results_.size() - 1;
+        select_to_result_col_id_[info] = col_ID;
     }
     return true;
+}
+
+bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
+// Apply filter
+{
+    auto compareCol = relation_.columns[f.filter_column.col_id];
+    auto constant=f.constant;
+    switch (f.comparison) {
+        case FilterInfo::Comparison::Equal:
+            return compareCol[i]==constant;
+        case FilterInfo::Comparison::Greater:
+            return compareCol[i]>constant;
+        case FilterInfo::Comparison::Less:
+            return compareCol[i]<constant;
+    };
+    return false;
+}
+
+void FilterScan::asyncRun(boost::asio::io_service& ioService) {
+    #ifdef VERBOSE
+        cout << "FilterScan("<< queryIndex << "," << operatorIndex <<")::asyncRun" << endl;
+    #endif
+        pendingAsyncOperator = 0;
+        __sync_synchronize();
+        createAsyncTasks(ioService);  
+}
+
+void FilterScan::createAsyncTasks(boost::asio::io_service& ioService) {
+    #ifdef VERBOSE
+        cout << "FilterScan("<< queryIndex << "," << operatorIndex <<")::createAsyncTasks" << endl;
+    #endif  
+    //const uint64_t partitionSize = L2_SIZE/2;
+    //const unsigned taskNum = CNT_PARTITIONS(relation.size*relation.columns.size()*8, partitionSize);
+    __sync_synchronize();
+    if (is_stopped) {
+#ifdef ANALYZE_STOP
+        __sync_fetch_and_add(&fsStopCnt, 1);
+#endif
+//            cerr << "stop" << endl;
+        finishAsyncRun(ioService, true);
+        return;
+    }
+    int cnt_task = THREAD_NUM;
+    uint64_t size = relation_.size();
+    if (infos.size() == 1){
+        bool pass = true;
+        // 不知道为什么这里要检查filter 和 selectinfo是不是对的上
+        for (auto &f : filters_){
+            if (f.filter_column.col_id != infos[0].col_id){
+                pass = false;
+                break;
+            }
+        }
+    }
+
+    uint64_t taskLength = size/cnt_task;
+    uint64_t rest = size%cnt_task;
+    
+    if (taskLength < minTuplesPerTask) {
+        cnt_task = size/minTuplesPerTask;
+        if (cnt_task == 0)
+        cnt_task = 1;
+        taskLength = size/cnt_task;
+        rest = size%cnt_task;
+    }
+    
+    pendingTask = cnt_task;
+    
+    for (auto &sInfo : infos) {
+        input_data_.emplace_back(relation_.columns[sInfo.col_id]);
+        results.emplace_back(cnt_task);
+    }
+    
+    for (int i=0; i<cnt_task; i++) {
+        tmpResults.emplace_back();
+    }
+    
+    __sync_synchronize(); 
+    // uint64_t length = partitionSize/(relation.columns.size()*8); 
+    uint64_t start = 0;
+    for (unsigned i=0; i<cnt_task; i++) {
+        uint64_t length = taskLength;
+        if (rest) {
+            length++;
+            rest--;
+        }
+        ioService.post(bind(&FilterScan::filterTask, this, &ioService, i, start, length)); 
+        start += length;
+    }
+}
+
+void FilterScan::filterTask(boost::asio::io_service* ioService, int taskIndex, uint64_t start, uint64_t length) {
+    vector<vector<uint64_t>>& localResults = tmpResults[taskIndex];
+    unsigned colSize = input_data_.size();
+    unordered_map<uint64_t, unsigned> cntMap;
+    
+    __sync_synchronize();
+    if (is_stopped) {
+#ifdef ANALYZE_STOP
+        __sync_fetch_and_add(&fsTaskStopCnt, 1);
+#endif 
+//            cerr << "stop" << endl;
+        goto fs_finish;
+    }
+    
+    for (int j=0; j<input_data_.size(); j++) {
+        localResults.emplace_back();
+    }
+
+    for (uint64_t i=start;i<start+length;++i) {
+        bool pass=true;
+        for (auto& f : filters_) {
+            if(!(pass=applyFilter(i,f)))
+                break;
+        }
+        if (pass) {
+            // If count == 2, colSize already contains count column
+            for (unsigned cId=0;cId<colSize;++cId)
+                localResults[cId].push_back(input_data_[cId][i]);
+        }
+    }
+
+    for (unsigned cId=0;cId<colSize;++cId) {
+		results[cId].addTuples(taskIndex, localResults[cId].data(), localResults[cId].size());
+    }
+
+    //resultSize += localResults[0].size();
+	__sync_fetch_and_add(&resultSize, localResults[0].size());
+
+fs_finish:
+    int remainder = __sync_sub_and_fetch(&pendingTask, 1);
+    if (remainder == 0) {
+        for (unsigned cId=0;cId<colSize;++cId) {
+            results[cId].fix();
+        }
+        finishAsyncRun(*ioService, true);
+    }
 }
 
 // Copy to result
@@ -52,33 +219,6 @@ void FilterScan::copy2Result(uint64_t id) {
     for (unsigned cId = 0; cId < input_data_.size(); ++cId)
         tmp_results_[cId].push_back(input_data_[cId][id]);
     ++result_size_;
-}
-
-// Apply filter
-bool FilterScan::applyFilter(uint64_t i, FilterInfo &f) {
-    auto compare_col = relation_.columns()[f.filter_column.col_id];
-    auto constant = f.constant;
-    switch (f.comparison) {
-    case FilterInfo::Comparison::Equal:
-        return compare_col[i] == constant;
-    case FilterInfo::Comparison::Greater:
-        return compare_col[i] > constant;
-    case FilterInfo::Comparison::Less:
-        return compare_col[i] < constant;
-    };
-    return false;
-}
-
-// Run
-void FilterScan::run() {
-    for (uint64_t i = 0; i < relation_.size(); ++i) {
-        bool pass = true;
-        for (auto &f : filters_) {
-            pass &= applyFilter(i, f);
-        }
-        if (pass)
-            copy2Result(i);
-    }
 }
 
 // Require a column and add it to results
@@ -161,68 +301,308 @@ void Join::run() {
     }
 }
 
-// Copy to result
-void SelfJoin::copy2Result(uint64_t id) {
-    for (unsigned cId = 0; cId < copy_data_.size(); ++cId)
-        tmp_results_[cId].push_back(copy_data_[cId][id]);
-    ++result_size_;
+void Join::createAsyncTasks(boost::asio::io_service& ioService) {
+    assert (pendingAsyncOperator==0);
+    __sync_synchronize();
+    if (is_stopped) {
+#ifdef ANALYZE_STOP
+        __sync_fetch_and_add(&joinStopCnt, 1);
+#endif
+//            cerr << "stop" << endl;
+        finishAsyncRun(ioService, true);
+        return;
+    }
+    // Use smaller input_ for build
+    if (left_->resultSize>right_->resultSize) {
+        swap(left_,right_);
+        swap(p_info_.left,p_info_.right);
+        swap(requested_columns_left_,requested_columns_right_);
+    }
+
+    auto& left_input_data = left_->getResults();
+    auto& right_input_data = right_->getResults();
+
+    // Resolve the input_ columns_
+    unsigned res_col_id = 0;
+    for (auto &info : requested_columns_left_) {
+        select_to_result_col_id_[info] = res_col_id++;
+    }
+    for (auto &info : requested_columns_right_) {
+        select_to_result_col_id_[info] = res_col_id++;
+    }
+
+    if (left_->result_size() == 0) { // result is empty
+        finishAsyncRun(ioService, true);
+        return;
+    }
+
+    auto left_col_id = left_->resolve(p_info_.left);
+    auto right_col_id = right_->resolve(p_info_.right);
+
+    // Build phase
+    auto l_key_col_iter = left_input_data[left_col_id].begin(0);
+    hash_table_.reserve(left_->result_size() * 2);
+    for (uint64_t i = 0, limit = i + left_->result_size(); i != limit; i++, ++l_key_col_iter) {
+        hash_table_.emplace(*l_key_col_iter, i);
+    }
+    // Probe phase
+    int cnt_task = THREAD_NUM;
+    task_length = right_->result_size() / cnt_task;
+    task_remainder = right_->result_size() % cnt_task;
+
+    if (task_length < minTuplesPerTask) {
+        cnt_task = right_->resultSize / minTuplesPerTask;
+        if (cnt_task == 0 ) cnt_task = 1;
+        task_length = right_->resultSize/cnt_task;
+        task_remainder = right_->resultSize%cnt_task;
+    }
+    
+    pending_task = cnt_task;
+    for(int i = 0; i < cnt_task; i++) {
+        tmp_results_.emplace_back();
+    }
+
+    uint64_t start = 0;
+    uint64_t remainder = task_remainder;
+    for(int i = 0; i < cnt_task; i++) {
+        uint64_t length_left = task_length;
+        if(remainder) {
+            length_left++;
+            remainder--;
+        }
+        ioService.post(bind(&Join::probingTask, this, &ioService, cnt_task, i, right_col_id, start, length_left));
+        start += length_left;
+    }
 }
 
+void Join::probingTask(boost::asio::io_service* ioService, int cntTask, int taskIndex, uint64_t right_col_id, uint64_t start, uint64_t length) {
+    auto right_key_col = right_input_data_[right_col_id];
+    auto right_col_it = right_key_col.begin(start);
+    auto& localResults = tmp_results_[taskIndex];
+    unsigned left_col_size = left_input_data_.size();
+    unsigned right_col_size = right_input_data_.size();
+    unsigned col_size = left_col_size + right_col_size;
+    vector<uint64_t*> copy_l_data, copy_r_data_;
+    __sync_synchronize();
+    if (is_stopped) {
+        goto probing_finish;
+    }
+
+    if (length == 0) {
+        goto probing_finish;
+    }
+    for (int j=0; j< col_size; j++) {
+        localResults.emplace_back();
+    }
+
+    for(auto& info : requested_columns_right_) {
+        copy_r_data_.push_back(local)
+    }
+    for (uint64_t i = start; i != start + length; i++, ++right_col_it) {
+        auto r_key = *right_col_it;
+        auto range = hash_table_.equal_range(r_key);
+        for(auto iter = range.first; iter != range.second; ++iter) {
+            for (unsigned col_id = 0; col_id < left_col_size; col_id++) {
+
+            }
+        }
+    }
+    //local result 为空的时候需要result和临时变量初始化
+    for (int i = 0; i < col_size; i++) {
+        results[i].addTuples(taskIndex, localResults[i].data(), localResults[i].size());
+    }
+	__sync_fetch_and_add(&resultSize, localResults[0].size());
+
+    int remainder = __sync_sub_and_fetch(&pending_task, 1);
+    if (UNLIKELY(remainder == 0)) {
+        for (unsigned cId=0;cId<col_size;++cId) {
+            results[cId].fix();
+        }
+        finishAsyncRun(*ioService, true);
+        //input = nullptr;
+    }
+}
+
+bool SelfJoin::require(SelectInfo info)
 // Require a column and add it to results
-bool SelfJoin::require(SelectInfo info) {
+{
     if (required_IUs_.count(info))
         return true;
-    if (input_->require(info)) {
-        tmp_results_.emplace_back();
+    if(input_->require(info)) {
         required_IUs_.emplace(info);
         return true;
     }
     return false;
 }
-
-// Run
-void SelfJoin::run() {
+//---------------------------------------------------------------------------
+void SelfJoin::asyncRun(boost::asio::io_service& ioService) {
+#ifdef VERBOSE
+    cout << "SelfJoin("<< queryIndex << "," << operatorIndex <<")::asyncRun" << endl;
+#endif
+    pendingAsyncOperator = 1;
     input_->require(p_info_.left);
     input_->require(p_info_.right);
-    input_->run();
-    input_data_ = input_->getResults();
+    __sync_synchronize();
+    input_->asyncRun(ioService);
+}
+//---------------------------------------------------------------------------
+void SelfJoin::selfJoinTask(boost::asio::io_service* ioService, int taskIndex, uint64_t start, uint64_t length) {
+    auto& inputData=input_->getResults();
+    vector<vector<uint64_t>>& localResults = tmpResults[taskIndex];
+    auto leftColId=input_->resolve(p_info_.left);
+    auto rightColId=input_->resolve(p_info_.right);
 
-    for (auto &iu : required_IUs_) {
-        auto id = input_->resolve(iu);
-        copy_data_.emplace_back(input_data_[id]);
-        select_to_result_col_id_.emplace(iu, copy_data_.size() - 1);
+    auto leftColIt=inputData[leftColId].begin(start);
+    auto rightColIt=inputData[rightColId].begin(start);
+
+    vector<Column<uint64_t>::Iterator> colIt;
+
+    unsigned colSize = copy_data_.size();
+    
+    for (int j=0; j<colSize; j++) {
+        localResults.emplace_back();
+    }
+    
+    for (unsigned i=0; i<colSize; i++) {
+        colIt.push_back(copy_data_[i]->begin(start));
+    }
+    for (uint64_t i=start, limit=start+length;i<limit;++i) {
+        if (*leftColIt==*rightColIt) {
+            for (unsigned cId=0;cId<colSize;++cId) {
+                localResults[cId].push_back(*(colIt[cId]));
+            }
+        }
+        ++leftColIt;
+        ++rightColIt;
+        for (unsigned i=0; i<colSize; i++) {
+            ++colIt[i];
+        }
+    }
+    //local result 为空的时候需要result和临时变量初始化
+    for (int i=0; i<colSize; i++) {
+        results[i].addTuples(taskIndex, localResults[i].data(), localResults[i].size());
+    }
+	__sync_fetch_and_add(&resultSize, localResults[0].size());
+
+    int remainder = __sync_sub_and_fetch(&pendingTask, 1);
+    if (UNLIKELY(remainder == 0)) {
+        for (unsigned cId=0;cId<colSize;++cId) {
+            results[cId].fix();
+        }
+        finishAsyncRun(*ioService, true);
+        //input = nullptr;
+    }
+}
+//---------------------------------------------------------------------------
+void SelfJoin::createAsyncTasks(boost::asio::io_service& ioService) {
+    assert (pendingAsyncOperator==0);
+#ifdef VERBOSE
+    cout << "SelfJoin("<< queryIndex << "," << operatorIndex <<")::createAsyncTasks" << endl;
+#endif
+
+    if (input_->resultSize == 0) {
+        finishAsyncRun(ioService, true);
+        return;
+    }
+    
+    int cntTask = THREAD_NUM;
+    uint64_t taskLength = input_->resultSize/cntTask;
+    uint64_t rest = input_->resultSize%cntTask;
+    
+    if (taskLength < minTuplesPerTask) {
+        cntTask = input_->resultSize/minTuplesPerTask;
+        if (cntTask == 0)
+            cntTask = 1;
+        taskLength = input_->resultSize/cntTask;
+        rest = input_->resultSize%cntTask;
+    }
+    
+    auto& inputData=input_->getResults();
+    
+    for (auto& iu : required_IUs_) {
+        auto id=input_->resolve(iu);
+        copy_data_.emplace_back(&inputData[id]);
+        select_to_result_col_id_.emplace(iu,copy_data_.size()-1);
+		results.emplace_back(cntTask);
     }
 
-    auto left_col_id = input_->resolve(p_info_.left);
-    auto right_col_id = input_->resolve(p_info_.right);
-
-    auto left_col = input_data_[left_col_id];
-    auto right_col = input_data_[right_col_id];
-    for (uint64_t i = 0; i < input_->result_size(); ++i) {
-        if (left_col[i] == right_col[i])
-            copy2Result(i);
+    for (int i=0; i<cntTask; i++) {
+        tmpResults.emplace_back();
+    } 
+    
+    pendingTask = cntTask; 
+    __sync_synchronize();
+    uint64_t start = 0;
+    for (int i=0; i<cntTask; i++) {
+        uint64_t length = taskLength;
+        if (rest) {
+            length++;
+            rest--;
+        }
+        ioService.post(bind(&SelfJoin::selfJoinTask, this, &ioService, i, start, length)); 
+        start += length;
     }
 }
 
-// Run
-void Checksum::run() {
-    for (auto &sInfo : col_info_) {
-        input_->require(sInfo);
+void Checksum::createAsyncTasks(boost::asio::io_service& ioService) {
+    assert (pendingAsyncOperator==0);
+#ifdef VERBOSE
+    cout << "Checksum(" << queryIndex << "," << operatorIndex <<  ")::createAsyncTasks" << endl;
+#endif
+    for (auto& sInfo : col_info_) {
+        check_sums_.push_back(0);
     }
-    input_->run();
-    // returns the materialized results, which is fine and could do things
-    auto results = input_->getResults();
-
-    for (auto &sInfo : col_info_) {
-        auto col_id = input_->resolve(sInfo);
-        auto result_col = results[col_id];
-        uint64_t sum = 0;
-        result_size_ = input_->result_size();
-        for (auto iter = result_col, limit = iter + input_->result_size();
-                iter != limit;
-                ++iter)
-            sum += *iter;
-        check_sums_.push_back(sum);
+    
+    if (input_->result_size() == 0) {
+        finishAsyncRun(ioService, false);
+        return;
+    }
+    
+    int cnt_task = THREAD_NUM;
+    uint64_t taskLength = input_->result_size()/cnt_task;
+    uint64_t rest = input_->result_size() % cnt_task;
+    
+    if (taskLength < min_tuples_per_task) {
+        cnt_task = input_->result_size() / min_tuples_per_task;
+        if (cnt_task == 0)
+        cnt_task = 1;
+        taskLength = input_->result_size() / cnt_task;
+        rest = input_->result_size() % cnt_task;
+    }
+#ifdef VERBOSE 
+    cout << "Checksum(" << queryIndex << "," << operatorIndex <<  ") input size: " << input->resultSize << " cntTask: " << cntTask << " length: " << taskLength << " rest: " << rest <<  endl;
+#endif
+    pending_task = cnt_task; 
+    __sync_synchronize();
+    uint64_t start = 0;
+    for (int i=0; i<cnt_task; i++) {
+        uint64_t length = taskLength;
+        if (rest) {
+            length++;
+            rest--;
+        }
+        ioService.post(bind(&Checksum::checksumTask, this, &ioService, i, start, length)); 
+        start += length;
     }
 }
 
+void Checksum::checksumTask(boost::asio::io_service* ioService, int taskIndex, uint64_t start, uint64_t length) {
+    auto& input_data = input_->getResults();
+     
+    int sumIndex = 0;
+    for (auto& sInfo : col_info_) {
+        auto colId = input_->resolve(sInfo);
+        auto input_col_it = input_data[colId].begin(start);
+        uint64_t sum=0;
+        for (int i=0; i<length; i++,++input_col_it){
+            sum += (*input_col_it);
+        }
+        __sync_fetch_and_add(&check_sums_[sumIndex++], sum);
+    }
+    
+    int remainder = __sync_sub_and_fetch(&pending_task, 1);
+    if (UNLIKELY(remainder == 0)) {
+        finishAsyncRun(*ioService, false);
+        //input = nullptr;
+    }
+}
