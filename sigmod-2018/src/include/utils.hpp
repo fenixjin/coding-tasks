@@ -1,6 +1,6 @@
 #pragma once
 #include <fstream>
-#include "relation.h"
+#include "relation.hpp"
 // Utils macro, maybe faster than static method?
 
 #define LIKELY(x) __builtin_expect((x),1)
