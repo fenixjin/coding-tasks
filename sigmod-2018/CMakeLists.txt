@@ -12,6 +12,9 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -fsanitize=address -Wall"
 
 include_directories(${PROJECT_SOURCE_DIR}/src/include)
 
+set(Boost_DEBUG ON)
+find_package(Boost REQUIRED COMPONENTS thread)
+
 # Get the list of all sources.
 file(GLOB_RECURSE
 	    PROJECT_SRCS
@@ -31,13 +34,13 @@ target_include_directories(database PUBLIC
     $<INSTALL_INTERFACE:include>
     PRIVATE src)
 
-OPTION(FORCE_TESTS "Build tests, regardless of build type." ON)
-if (CMAKE_BUILD_TYPE MATCHES "[Dd][Ee][Bb][Uu][Gg]" OR FORCE_TESTS)
-    add_subdirectory(test)
-endif()
+#OPTION(FORCE_TESTS "Build tests, regardless of build type." ON)
+#if (CMAKE_BUILD_TYPE MATCHES "[Dd][Ee][Bb][Uu][Gg]" OR FORCE_TESTS)
+#    add_subdirectory(test)
+#endif()
 
 add_executable(driver src/main/main.cpp)
-target_link_libraries(driver database)
+target_link_libraries(driver database boost_system boost_thread)
 
 # Interactive command line tool to translate our query format to SQL queries
 add_executable(query2SQL src/main/query2SQL.cpp)

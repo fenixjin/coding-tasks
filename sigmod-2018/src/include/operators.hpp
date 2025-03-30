@@ -161,6 +161,8 @@ private:
     /// The join predicate info
     PredicateInfo p_info_;
 
+    std::vector<std::vector<uint64_t>> tmp_results;
+
     using HT = std::unordered_multimap<uint64_t, uint64_t>;
 
     /// The hash table for the join
@@ -169,8 +171,6 @@ private:
     std::unordered_set<SelectInfo> requested_columns_;
     /// Left/right columns that have been requested
     std::vector<SelectInfo> requested_columns_left_, requested_columns_right_;
-
-    std::vector<std::vector<std::vector<uint64_t>>> tmp_results; // [partition][probingTaskIndex][col][tuple]
 
     int pending_task = -1;
     uint64_t minTuplesPerTask = 1000;

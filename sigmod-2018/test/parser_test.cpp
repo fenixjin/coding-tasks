@@ -1,6 +1,6 @@
 #include "gtest/gtest.h"
 
-#include "parser.h"
+#include "parser.hpp"
 
 TEST(Parser, ParseRelations) {
   QueryInfo i;

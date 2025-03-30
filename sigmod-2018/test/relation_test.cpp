@@ -2,8 +2,8 @@
 
 #include "gtest/gtest.h"
 
-#include "relation.h"
-#include "utils.h"
+#include "relation.hpp"
+#include "utils.hpp"
 
 static void ASSERT_RELATION_EQ(Relation &r1, Relation &r2) {
   ASSERT_EQ(r1.size(), r2.size());

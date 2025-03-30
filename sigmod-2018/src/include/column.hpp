@@ -49,8 +49,8 @@ public:
      }
 	
 	class Iterator {
-		unsigned localIndex;
-		uint64_t localOffset; 
+		unsigned seg_index;
+		uint64_t seg_offset; 
 		Column<T> col;
 
 	public:
@@ -58,15 +58,15 @@ public:
             if (col.tuples.size() == 0)
                 return;
 			auto it = lower_bound(col.baseOffset.begin(), col.baseOffset.end(),  start);
-			localIndex = it - col.baseOffset.begin();
-            assert(localIndex < col.baseOffset.size());
-			if (col.baseOffset[localIndex] != start)
-				localIndex--;
-			localOffset = start - col.baseOffset[localIndex];
-			while (0 == col.tupleLength[localIndex]) {
-                localIndex++;
-                localOffset = 0;
-                if (localIndex == col.tupleLength.size()) {
+			seg_index = it - col.baseOffset.begin();
+            assert(seg_index < col.baseOffset.size());
+			if (col.baseOffset[seg_index] != start)
+			seg_index--;
+				seg_offset = start - col.baseOffset[seg_index];
+			while (0 == col.tupleLength[seg_index]) {
+                seg_index++;
+                seg_offset = 0;
+                if (seg_index == col.tupleLength.size()) {
                     assert("Column::Iterator: invalud start value");
                     break;
                 }
@@ -74,16 +74,21 @@ public:
 		}
 		
 		inline T& operator*() {
-            assert(localIndex < col.tupleLength.size());
-			return col.tuples[localIndex][localOffset];
+			if(seg_index >= col.tupleLength.size()) {
+				cout << "read col out of bound" << endl;
+			}
+            //assert(seg_index < col.tupleLength.size());
+			return col.tuples[seg_index][seg_offset];
 		}
 
 		inline Iterator& operator++() {
-			localOffset++;
-			while (UNLIKELY(localOffset >= col.tupleLength[localIndex])) {
-                localIndex++;
-                localOffset = 0; 
-                if (UNLIKELY(localIndex == col.tupleLength.size())) {
+			seg_offset++;
+			// 读取列表中的最后一个offset的时候居然会走到下一个seg，直接导致读取越界了，原版居然也是这么写的。
+			// 需要研究一下column的过程。
+			while (UNLIKELY(seg_offset >= col.tupleLength[seg_index])) {
+                seg_index++;
+                seg_offset = 0; 
+                if (UNLIKELY(seg_index == col.tupleLength.size())) {
                     break;
                 }
 			}

@@ -1,12 +1,18 @@
 #include <iostream>
+#include <filesystem>
 
-#include "joiner.h"
-#include "parser.h"
+#include "joiner.hpp"
+#include "parser.hpp"
 
 using namespace std;
 
 int main(int argc, char *argv[]) {
     Joiner joiner(THREAD_NUM);
+    namespace fs = std::filesystem;
+
+    fs::path current_dir = fs::current_path();
+    fs::path parent_dir = current_dir.parent_path();
+    fs::current_path(parent_dir);
 
     // Read join relations
     std::string line;

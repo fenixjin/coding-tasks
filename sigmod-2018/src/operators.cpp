@@ -1,5 +1,5 @@
-#include "operators.h"
-#include "joiner.h"
+#include "operators.hpp"
+#include "joiner.hpp"
 #include <cassert>
 
 // Get materialized results
@@ -27,6 +27,10 @@ void Operator::finishAsyncRun(boost::asio::io_service& ioService, bool startPare
     }
 }
 
+uint64_t Operator::getResultsSize() {
+    return result_size_ * results.size() * 8;
+}
+
 // Require a column and add it to results
 bool Scan::require(SelectInfo info)
 // Require a column and add it to results
@@ -34,7 +38,7 @@ bool Scan::require(SelectInfo info)
     if (info.binding != relation_binding_)  {
         return false;
     }
-    assert(info.col_id < relation_.columns.size());
+    assert(info.col_id < relation_.columns_.size());
     if (select_to_result_col_id_.find(info)==select_to_result_col_id_.end()) {
 //        resultColumns.push_back(relation.columns[info.colId]);
         results.emplace_back(1);
@@ -50,7 +54,7 @@ void Scan::asyncRun(boost::asio::io_service& ioService) {
     #endif
         pendingAsyncOperator = 0;
         for (int i = 0; i < infos.size(); i++) {
-            results[i].addTuples(0, relation_.columns[infos[i].col_id], relation_.size());
+            results[i].addTuples(0, relation_.columns_[infos[i].col_id], relation_.size());
             results[i].fix();
         }
         result_size_=relation_.size(); 
@@ -67,7 +71,8 @@ std::vector<Column<uint64_t>>& Scan::getResults() {
 bool FilterScan::require(SelectInfo info) {
     if (info.binding != relation_binding_)
         return false;
-    assert(info.col_id < relation_.columns().size());
+
+    assert(info.col_id<relation_.columns_.size());
     if (select_to_result_col_id_.find(info) == select_to_result_col_id_.end()) {
         // Add to results
         infos.push_back(info);
@@ -80,7 +85,7 @@ bool FilterScan::require(SelectInfo info) {
 bool FilterScan::applyFilter(uint64_t i,FilterInfo& f)
 // Apply filter
 {
-    auto compareCol = relation_.columns[f.filter_column.col_id];
+    auto compareCol = relation_.columns_[f.filter_column.col_id];
     auto constant=f.constant;
     switch (f.comparison) {
         case FilterInfo::Comparison::Equal:
@@ -144,7 +149,7 @@ void FilterScan::createAsyncTasks(boost::asio::io_service& ioService) {
     pendingTask = cnt_task;
     
     for (auto &sInfo : infos) {
-        input_data_.emplace_back(relation_.columns[sInfo.col_id]);
+        input_data_.emplace_back(relation_.columns_[sInfo.col_id]);
         results.emplace_back(cnt_task);
     }
     
@@ -202,7 +207,7 @@ void FilterScan::filterTask(boost::asio::io_service* ioService, int taskIndex, u
     }
 
     //resultSize += localResults[0].size();
-	__sync_fetch_and_add(&resultSize, localResults[0].size());
+	__sync_fetch_and_add(&result_size_, localResults[0].size());
 
 fs_finish:
     int remainder = __sync_sub_and_fetch(&pendingTask, 1);
@@ -214,12 +219,12 @@ fs_finish:
     }
 }
 
-// Copy to result
-void FilterScan::copy2Result(uint64_t id) {
-    for (unsigned cId = 0; cId < input_data_.size(); ++cId)
-        tmp_results_[cId].push_back(input_data_[cId][id]);
-    ++result_size_;
-}
+// // Copy to result
+// void FilterScan::copy2Result(uint64_t id) {
+//     for (unsigned cId = 0; cId < input_data_.size(); ++cId)
+//         tmp_results_[cId].push_back(input_data_[cId][id]);
+//     ++result_size_;
+// }
 
 // Require a column and add it to results
 bool Join::require(SelectInfo info) {
@@ -242,67 +247,85 @@ bool Join::require(SelectInfo info) {
 }
 
 // Copy to result
-void Join::copy2Result(uint64_t left_id, uint64_t right_id) {
-    unsigned rel_col_id = 0;
-    for (unsigned cId = 0; cId < copy_left_data_.size(); ++cId)
-        tmp_results_[rel_col_id++].push_back(copy_left_data_[cId][left_id]);
+// void Join::copy2Result(uint64_t left_id, uint64_t right_id) {
+//     // unsigned rel_col_id = 0;
+//     // for (unsigned cId = 0; cId < copy_left_data_.size(); ++cId)
+//     //     tmp_results_[rel_col_id++].push_back(copy_left_data_[cId][left_id]);
 
-    for (unsigned cId = 0; cId < copy_right_data_.size(); ++cId)
-        tmp_results_[rel_col_id++].push_back(copy_right_data_[cId][right_id]);
-    ++result_size_;
-}
+//     // for (unsigned cId = 0; cId < copy_right_data_.size(); ++cId)
+//     //     tmp_results_[rel_col_id++].push_back(copy_right_data_[cId][right_id]);
+//     for (int i = 0; i < )
+//     ++result_size_;
+// }
 
-// Run
-void Join::run() {
-    left_->require(p_info_.left);
-    right_->require(p_info_.right);
-    left_->run();
-    right_->run();
+// // Run
+// void Join::run() {
+//     left_->require(p_info_.left);
+//     right_->require(p_info_.right);
+//     left_->run();
+//     right_->run();
 
+//     // Use smaller input_ for build
+//     if (left_->result_size() > right_->result_size()) {
+//         std::swap(left_, right_);
+//         std::swap(p_info_.left, p_info_.right);
+//         std::swap(requested_columns_left_, requested_columns_right_);
+//     }
 
-    // Use smaller input_ for build
-    if (left_->result_size() > right_->result_size()) {
-        std::swap(left_, right_);
-        std::swap(p_info_.left, p_info_.right);
-        std::swap(requested_columns_left_, requested_columns_right_);
-    }
+//     auto left_input_data = left_->getResults();
+//     auto right_input_data = right_->getResults();
 
-    auto left_input_data = left_->getResults();
-    auto right_input_data = right_->getResults();
+//     // Resolve the input_ columns_
+//     unsigned res_col_id = 0;
+//     for (auto &info : requested_columns_left_) {
+//         copy_left_data_.push_back(left_input_data[left_->resolve(info)]);
+//         select_to_result_col_id_[info] = res_col_id++;
+//     }
+//     for (auto &info : requested_columns_right_) {
+//         copy_right_data_.push_back(right_input_data[right_->resolve(info)]);
+//         select_to_result_col_id_[info] = res_col_id++;
+//     }
 
-    // Resolve the input_ columns_
-    unsigned res_col_id = 0;
-    for (auto &info : requested_columns_left_) {
-        copy_left_data_.push_back(left_input_data[left_->resolve(info)]);
-        select_to_result_col_id_[info] = res_col_id++;
-    }
-    for (auto &info : requested_columns_right_) {
-        copy_right_data_.push_back(right_input_data[right_->resolve(info)]);
-        select_to_result_col_id_[info] = res_col_id++;
-    }
+//     auto left_col_id = left_->resolve(p_info_.left);
+//     auto right_col_id = right_->resolve(p_info_.right);
 
-    auto left_col_id = left_->resolve(p_info_.left);
-    auto right_col_id = right_->resolve(p_info_.right);
-
-    // Build phase
-    auto left_key_column = left_input_data[left_col_id];
-    hash_table_.reserve(left_->result_size() * 2);
-    for (uint64_t i = 0, limit = i + left_->result_size(); i != limit; ++i) {
-        hash_table_.emplace(left_key_column[i], i);
-    }   
-    // Probe phase
-    auto right_key_column = right_input_data[right_col_id];
-    for (uint64_t i = 0, limit = i + right_->result_size(); i != limit; ++i) {
-        auto rightKey = right_key_column[i];
-        auto range = hash_table_.equal_range(rightKey);
-        for (auto iter = range.first; iter != range.second; ++iter) {
-            copy2Result(iter->second, i);
-        }
-    }
+//     // Build phase
+//     auto left_key_column = left_input_data[left_col_id];
+//     hash_table_.reserve(left_->result_size() * 2);
+//     auto left_key_iter = left_key_column.begin(0);
+//     for (uint64_t i = 0, limit = i + left_->result_size(); i != limit; i++, ++left_key_iter) {
+//         hash_table_.emplace(*left_key_iter, i);
+//     }   
+//     // Probe phase
+//     auto right_key_column = right_input_data[right_col_id];
+//     auto r_key_col_iter = right_key_column.begin(0);
+//     for (uint64_t i = 0, limit = i + right_->result_size(); i != limit; ++i) {
+//         auto rightKey = *r_key_col_iter;
+//         auto range = hash_table_.equal_range(rightKey);
+//         for (auto iter = range.first; iter != range.second; ++iter) {
+//             for(int j = 0; j < left_input_data_.size(); j++){
+//                 results[j].push_back(iter);
+//             }
+//         }
+//     }
+// }
+void Join::asyncRun(boost::asio::io_service& ioService) {
+    #ifdef VERBOSE
+        cout << "Join("<< queryIndex << "," << operatorIndex <<")::asyncRun" << endl;
+    #endif
+        pendingAsyncOperator = 2;
+        left_->require(p_info_.left);
+        right_->require(p_info_.right);
+        __sync_synchronize();
+        left_->asyncRun(ioService);
+        right_->asyncRun(ioService);
 }
 
 void Join::createAsyncTasks(boost::asio::io_service& ioService) {
+    // currently there is no multithread for join
+    // all steps of join will run in this function
     assert (pendingAsyncOperator==0);
+    
     __sync_synchronize();
     if (is_stopped) {
 #ifdef ANALYZE_STOP
@@ -313,7 +336,7 @@ void Join::createAsyncTasks(boost::asio::io_service& ioService) {
         return;
     }
     // Use smaller input_ for build
-    if (left_->resultSize>right_->resultSize) {
+    if (left_->result_size() > right_->result_size()) {
         swap(left_,right_);
         swap(p_info_.left,p_info_.right);
         swap(requested_columns_left_,requested_columns_right_);
@@ -323,6 +346,7 @@ void Join::createAsyncTasks(boost::asio::io_service& ioService) {
     auto& right_input_data = right_->getResults();
 
     // Resolve the input_ columns_
+    // 在这里join会建立自己的
     unsigned res_col_id = 0;
     for (auto &info : requested_columns_left_) {
         select_to_result_col_id_[info] = res_col_id++;
@@ -338,6 +362,19 @@ void Join::createAsyncTasks(boost::asio::io_service& ioService) {
 
     auto left_col_id = left_->resolve(p_info_.left);
     auto right_col_id = right_->resolve(p_info_.right);
+    unsigned col_size = left_input_data.size() + right_input_data.size();
+    for(int i = 0; i < col_size; i++) {
+        tmp_results.emplace_back();
+        results.emplace_back(1);
+    }
+    
+    vector<Column<uint64_t>::Iterator> r_col_iters;
+    // for(int i = 0; i < left_input_data.size(); i++) {
+    //     col_iters.emplace_back(left_input_data[i].begin(0));
+    // }
+    for(int i = 0; i < right_input_data.size(); i++) {
+        r_col_iters.emplace_back(right_input_data[i].begin(0));
+    }
 
     // Build phase
     auto l_key_col_iter = left_input_data[left_col_id].begin(0);
@@ -346,82 +383,113 @@ void Join::createAsyncTasks(boost::asio::io_service& ioService) {
         hash_table_.emplace(*l_key_col_iter, i);
     }
     // Probe phase
-    int cnt_task = THREAD_NUM;
-    task_length = right_->result_size() / cnt_task;
-    task_remainder = right_->result_size() % cnt_task;
 
-    if (task_length < minTuplesPerTask) {
-        cnt_task = right_->resultSize / minTuplesPerTask;
-        if (cnt_task == 0 ) cnt_task = 1;
-        task_length = right_->resultSize/cnt_task;
-        task_remainder = right_->resultSize%cnt_task;
-    }
-    
-    pending_task = cnt_task;
-    for(int i = 0; i < cnt_task; i++) {
-        tmp_results_.emplace_back();
-    }
-
-    uint64_t start = 0;
-    uint64_t remainder = task_remainder;
-    for(int i = 0; i < cnt_task; i++) {
-        uint64_t length_left = task_length;
-        if(remainder) {
-            length_left++;
-            remainder--;
-        }
-        ioService.post(bind(&Join::probingTask, this, &ioService, cnt_task, i, right_col_id, start, length_left));
-        start += length_left;
-    }
-}
-
-void Join::probingTask(boost::asio::io_service* ioService, int cntTask, int taskIndex, uint64_t right_col_id, uint64_t start, uint64_t length) {
-    auto right_key_col = right_input_data_[right_col_id];
-    auto right_col_it = right_key_col.begin(start);
-    auto& localResults = tmp_results_[taskIndex];
-    unsigned left_col_size = left_input_data_.size();
-    unsigned right_col_size = right_input_data_.size();
-    unsigned col_size = left_col_size + right_col_size;
-    vector<uint64_t*> copy_l_data, copy_r_data_;
-    __sync_synchronize();
-    if (is_stopped) {
-        goto probing_finish;
-    }
-
-    if (length == 0) {
-        goto probing_finish;
-    }
-    for (int j=0; j< col_size; j++) {
-        localResults.emplace_back();
-    }
-
-    for(auto& info : requested_columns_right_) {
-        copy_r_data_.push_back(local)
-    }
-    for (uint64_t i = start; i != start + length; i++, ++right_col_it) {
-        auto r_key = *right_col_it;
+    auto r_key_col_iter = right_input_data[left_col_id].begin(0);
+    for (uint64_t i = 0, limit = i + right_->result_size(); i != limit; i++, ++r_key_col_iter) {
+        auto r_key = *r_key_col_iter;
         auto range = hash_table_.equal_range(r_key);
-        for(auto iter = range.first; iter != range.second; ++iter) {
-            for (unsigned col_id = 0; col_id < left_col_size; col_id++) {
-
+        for (auto iter = range.first; iter != range.second; iter++) {
+            // 此处将左侧表的数据加入结果中，tempresults 的第一维应该是临时结果中的列号
+            // 应该检查一下两种版本中的列号的变化情况。
+            uint res_col_id = 0;
+            for(unsigned col_idx = 0; col_idx < left_input_data.size(); col_idx++) {
+                tmp_results[res_col_id++].emplace_back(*(left_input_data[col_idx].begin((*iter).second)));
+            }
+            for(auto& r_col_iter : r_col_iters) {
+                tmp_results[res_col_id++].emplace_back(*r_col_iter);
             }
         }
-    }
-    //local result 为空的时候需要result和临时变量初始化
-    for (int i = 0; i < col_size; i++) {
-        results[i].addTuples(taskIndex, localResults[i].data(), localResults[i].size());
-    }
-	__sync_fetch_and_add(&resultSize, localResults[0].size());
-
-    int remainder = __sync_sub_and_fetch(&pending_task, 1);
-    if (UNLIKELY(remainder == 0)) {
-        for (unsigned cId=0;cId<col_size;++cId) {
-            results[cId].fix();
+        for(auto& iter : r_col_iters){
+            ++iter;
         }
-        finishAsyncRun(*ioService, true);
-        //input = nullptr;
     }
+    for (int i = 0; i < col_size; i++) {
+        results[i].addTuples(0, tmp_results[i].data(), tmp_results[i].size());
+        results[i].fix();
+    }
+    __sync_fetch_and_add(&result_size_, tmp_results[0].size());
+    finishAsyncRun(ioService,true);
+    // UNIFINISHED multithread version
+    // int cnt_task = THREAD_NUM;
+    // task_length = right_->result_size() / cnt_task;
+    // task_remainder = right_->result_size() % cnt_task;
+
+    // if (task_length < minTuplesPerTask) {
+    //     cnt_task = right_->resultSize / minTuplesPerTask;
+    //     if (cnt_task == 0 ) cnt_task = 1;
+    //     task_length = right_->resultSize/cnt_task;
+    //     task_remainder = right_->resultSize%cnt_task;
+    // }
+    
+    // pending_task = cnt_task;
+    // for(int i = 0; i < cnt_task; i++) {
+    //     tmp_results_.emplace_back();
+    // }
+
+    // uint64_t start = 0;
+    // uint64_t remainder = task_remainder;
+    // for(int i = 0; i < cnt_task; i++) {
+    //     uint64_t length_left = task_length;
+    //     if(remainder) {
+    //         length_left++;
+    //         remainder--;
+    //     }
+    //     ioService.post(bind(&Join::probingTask, this, &ioService, cnt_task, i, right_col_id, start, length_left));
+    //     start += length_left;
+    // }
 }
+
+void Join::copy2Result(uint64_t left_index, uint64_t right_index) {
+    
+}
+
+// void Join::probingTask(boost::asio::io_service* ioService, int cntTask, int taskIndex, uint64_t right_col_id, uint64_t start, uint64_t length) {
+//     auto right_key_col = right_input_data_[right_col_id];
+//     auto right_col_it = right_key_col.begin(start);
+//     auto& localResults = tmp_results_[taskIndex];
+//     unsigned left_col_size = left_input_data_.size();
+//     unsigned right_col_size = right_input_data_.size();
+//     unsigned col_size = left_col_size + right_col_size;
+//     vector<uint64_t*> copy_l_data, copy_r_data_;
+//     __sync_synchronize();
+//     if (is_stopped) {
+//         goto probing_finish;
+//     }
+
+//     if (length == 0) {
+//         goto probing_finish;
+//     }
+//     for (int j=0; j< col_size; j++) {
+//         localResults.emplace_back();
+//     }
+
+//     for(auto& info : requested_columns_right_) {
+//         copy_r_data_.push_back(local)
+//     }
+//     for (uint64_t i = start; i != start + length; i++, ++right_col_it) {
+//         auto r_key = *right_col_it;
+//         auto range = hash_table_.equal_range(r_key);
+//         for(auto iter = range.first; iter != range.second; ++iter) {
+//             for (unsigned col_id = 0; col_id < left_col_size; col_id++) {
+
+//             }
+//         }
+//     }
+//     //local result 为空的时候需要result和临时变量初始化
+//     for (int i = 0; i < col_size; i++) {
+//         results[i].addTuples(taskIndex, localResults[i].data(), localResults[i].size());
+//     }
+// 	__sync_fetch_and_add(&resultSize, localResults[0].size());
+
+//     int remainder = __sync_sub_and_fetch(&pending_task, 1);
+//     if (UNLIKELY(remainder == 0)) {
+//         for (unsigned cId=0;cId<col_size;++cId) {
+//             results[cId].fix();
+//         }
+//         finishAsyncRun(*ioService, true);
+//         //input = nullptr;
+//     }
+// }
 
 bool SelfJoin::require(SelectInfo info)
 // Require a column and add it to results
@@ -482,7 +550,7 @@ void SelfJoin::selfJoinTask(boost::asio::io_service* ioService, int taskIndex, u
     for (int i=0; i<colSize; i++) {
         results[i].addTuples(taskIndex, localResults[i].data(), localResults[i].size());
     }
-	__sync_fetch_and_add(&resultSize, localResults[0].size());
+	__sync_fetch_and_add(&result_size_, localResults[0].size());
 
     int remainder = __sync_sub_and_fetch(&pendingTask, 1);
     if (UNLIKELY(remainder == 0)) {
@@ -499,22 +567,22 @@ void SelfJoin::createAsyncTasks(boost::asio::io_service& ioService) {
 #ifdef VERBOSE
     cout << "SelfJoin("<< queryIndex << "," << operatorIndex <<")::createAsyncTasks" << endl;
 #endif
-
-    if (input_->resultSize == 0) {
+    uint64_t result_size = input_->result_size();
+    if (input_->result_size() == 0) {
         finishAsyncRun(ioService, true);
         return;
     }
     
     int cntTask = THREAD_NUM;
-    uint64_t taskLength = input_->resultSize/cntTask;
-    uint64_t rest = input_->resultSize%cntTask;
+    uint64_t taskLength = result_size / cntTask;
+    uint64_t rest = result_size %cntTask;
     
     if (taskLength < minTuplesPerTask) {
-        cntTask = input_->resultSize/minTuplesPerTask;
+        cntTask = result_size/minTuplesPerTask;
         if (cntTask == 0)
             cntTask = 1;
-        taskLength = input_->resultSize/cntTask;
-        rest = input_->resultSize%cntTask;
+        taskLength = result_size/cntTask;
+        rest = result_size %cntTask;
     }
     
     auto& inputData=input_->getResults();
@@ -544,6 +612,20 @@ void SelfJoin::createAsyncTasks(boost::asio::io_service& ioService) {
     }
 }
 
+void Checksum::asyncRun(boost::asio::io_service& ioService, int queryIndex) {
+    #ifdef VERBOSE
+        cout << "Checksum(" << queryIndex << "," << operatorIndex << ")::asyncRun()" << endl;
+    #endif
+        this->query_index = queryIndex;
+        pendingAsyncOperator = 1;
+        for (auto& sInfo : col_info_) {
+            input_->require(sInfo);
+        }
+        __sync_synchronize();
+        input_->asyncRun(ioService);
+    //    cout << "Checksum::asyncRun" << endl;
+}
+
 void Checksum::createAsyncTasks(boost::asio::io_service& ioService) {
     assert (pendingAsyncOperator==0);
 #ifdef VERBOSE
@@ -570,7 +652,7 @@ void Checksum::createAsyncTasks(boost::asio::io_service& ioService) {
         rest = input_->result_size() % cnt_task;
     }
 #ifdef VERBOSE 
-    cout << "Checksum(" << queryIndex << "," << operatorIndex <<  ") input size: " << input->resultSize << " cntTask: " << cntTask << " length: " << taskLength << " rest: " << rest <<  endl;
+    cout << "Checksum(" << queryIndex << "," << operatorIndex <<  ") input size: " << input->result_size() << " cntTask: " << cntTask << " length: " << taskLength << " rest: " << rest <<  endl;
 #endif
     pending_task = cnt_task; 
     __sync_synchronize();
@@ -595,6 +677,9 @@ void Checksum::checksumTask(boost::asio::io_service* ioService, int taskIndex, u
         auto input_col_it = input_data[colId].begin(start);
         uint64_t sum=0;
         for (int i=0; i<length; i++,++input_col_it){
+            if(i > 487) {
+                cout << i << endl;
+            }
             sum += (*input_col_it);
         }
         __sync_fetch_and_add(&check_sums_[sumIndex++], sum);
@@ -605,4 +690,44 @@ void Checksum::checksumTask(boost::asio::io_service* ioService, int taskIndex, u
         finishAsyncRun(*ioService, false);
         //input = nullptr;
     }
+}
+
+void Checksum::finishAsyncRun(boost::asio::io_service& ioService, bool startParentAsync) {
+    joiner.asyncResults[query_index] = std::move(check_sums_);
+    int pending = __sync_sub_and_fetch(&joiner.pendingAsyncJoin, 1);
+#ifdef VERBOSE
+    cout << "Checksum(" << queryIndex << "," << operatorIndex <<  ") finish query index: " << queryIndex << " rest quries: "<< pending << endl;
+#endif
+    assert(pending >= 0);
+    if (pending == 0) {
+#ifdef VERBOSE
+        cout << "A query set is done. " << endl;
+#endif
+        unique_lock<mutex> lk(joiner.cvAsyncMutex); // guard for missing notification
+        joiner.cvAsync.notify_one();
+    }
+}
+
+void Checksum::printAsyncInfo() {
+	cout << "pendingChecksum : " << pending_task << endl;
+	input_->printAsyncInfo();
+}
+
+void SelfJoin::printAsyncInfo() {
+	cout << "pendingSelfJoin : " << pendingTask << endl;
+	input_->printAsyncInfo();
+}
+void FilterScan::printAsyncInfo() {
+	cout << "pendingFilterScan : " << pendingTask << endl;
+}
+void Scan::printAsyncInfo() {
+}
+
+uint64_t Scan::getResultsSize() {
+    return results.size()* relation_.size()*8; 
+}
+
+void Join::printAsyncInfo() {
+	left_->printAsyncInfo();
+	right_->printAsyncInfo();
 }

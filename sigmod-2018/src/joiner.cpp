@@ -1,4 +1,4 @@
-#include "joiner.h"
+#include "joiner.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -9,8 +9,8 @@
 #include <sstream>
 #include <vector>
 
-#include "parser.h"
-#include "operators.h"
+#include "parser.hpp"
+#include "operators.hpp"
 
 using namespace std;
 
@@ -44,7 +44,7 @@ void Joiner::addRelation(Relation &&relation) {
 }
 
 // Loads a relation from disk
-const Relation &Joiner::getRelation(unsigned relation_id) {
+Relation &Joiner::getRelation(unsigned relation_id) {
     if (relation_id >= relations_.size()) {
         std::cerr << "Relation with id: " << relation_id << " does not exist"
                   << std::endl;
@@ -54,7 +54,7 @@ const Relation &Joiner::getRelation(unsigned relation_id) {
 }
 
 // Add scan to query
-std::unique_ptr<Operator> Joiner::addScan(std::set<unsigned> &used_relations,
+std::shared_ptr<Operator> Joiner::addScan(std::set<unsigned> &used_relations,
         const SelectInfo &info,
         QueryInfo &query) {
     used_relations.emplace(info.binding);
@@ -162,5 +162,32 @@ void Joiner::createAsyncQueryTask(string line)
     
     ioService.post(bind(&Joiner::join, this, query, nextQueryIndex)); 
     __sync_fetch_and_add(&nextQueryIndex, 1);
+}
+
+vector<string> Joiner::getAsyncJoinResults() { 
+    vector<string> results;
+
+    stringstream out;
+    for (auto& queryResult : asyncResults) {
+        for (unsigned i=0;i<queryResult.size();++i) {
+            out << (queryResult[i]==0?"NULL":to_string(queryResult[i]));
+            if (i<queryResult.size()-1)
+                out << " ";
+        }
+        out << "\n";
+        results.push_back(out.str());
+        out.str("");
+    }
+#ifdef VERBOSE
+    cout << "Joiner::getAsnyJoinResults "<< nextQueryIndex-1 << " queries are processed." << endl;
+#endif
+
+    asyncResults.clear();
+//    tmp.insert(tmp.end(), asyncJoins.begin(), asyncJoins.end()); 
+    ioService.post(bind([](vector<shared_ptr<Checksum>> ops){ }, asyncJoins)); //gc, asynchronous discount shared pointer and release
+    asyncJoins.clear();
+    nextQueryIndex = 0;
+    
+    return results;
 }
 

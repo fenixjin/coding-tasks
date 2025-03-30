@@ -13,7 +13,7 @@ private:
     /// The number of tuples
     uint64_t size_;
     /// The join column containing the keys
-    std::vector<uint64_t *> columns_;
+
 
 public:
     /// Constructor without mmap
@@ -41,8 +41,10 @@ public:
         return size_;
     }
 
-    /// The join column containing the keys
-    std::vector<uint64_t*> columns;
+    std::vector<uint64_t *> columns_;
+
+    // /// The join column containing the keys
+    // std::vector<uint64_t*> columns;
 
 private:
     /// Loads data from a file

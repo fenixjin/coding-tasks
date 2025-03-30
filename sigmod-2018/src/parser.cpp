@@ -1,4 +1,4 @@
-#include "parser.h"
+#include "parser.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -119,32 +119,43 @@ void QueryInfo::parsePredicates(std::string &raw_predicates) {
         }
     }
     // combine overlapped predicates and check for contradictory predicates;
-    std::unordered_map<SelectInfo, CombinedFilterInfo> col_2_combinefilters;
-    for(auto& f : filters_) {
-        col_2_combinefilters[f.filter_column];
-        if(!col_2_combinefilters[f.filter_column].mergeCondition(f.comparison, f.constant)) {
-            setIllegalQuery();
-            return;
+    std::vector<CombinedFilterInfo> col_2_combine_filters;
+    for(auto& f: filters_) {
+        bool found = false;
+        for(auto& combined_filter : col_2_combine_filters) {
+            if(f.filter_column == combined_filter.filter_column) {
+                found = true;
+                if(combined_filter.mergeCondition(f.comparison, f.constant)) {
+                    setIllegalQuery();
+                    return;
+                }
+            }
+        }
+        if (!found) {
+            col_2_combine_filters.emplace_back(f.filter_column);
         }
     }
     filters_.clear();
 
     // replace filter with optimized value
-    for(auto& [column, combined_filter] : col_2_combinefilters) {
+    for(auto& combined_filter : col_2_combine_filters) {
         if(combined_filter.equal.has_value()){
-            filters_.emplace_back(column, 
+            filters_.emplace_back(
+                combined_filter.filter_column, 
                 combined_filter.equal.value(), 
                 FilterInfo::Comparison::Equal
             );
         } else {
             if(combined_filter.greater.has_value()) {
-                filters_.emplace_back(column, 
+                filters_.emplace_back(
+                    combined_filter.filter_column, 
                     combined_filter.greater.value(), 
                     FilterInfo::Comparison::Greater
                 );
             }
             if(combined_filter.less.has_value()) {
-                filters_.emplace_back(column, 
+                filters_.emplace_back(
+                    combined_filter.filter_column, 
                     combined_filter.less.value(), 
                     FilterInfo::Comparison::Less
                 );
@@ -187,11 +198,37 @@ void QueryInfo::parseQuery(std::string &raw_query) {
     assert(query_parts.size() == 3);
     parseRelationIds(query_parts[0]);
     parsePredicates(query_parts[1]);
+    reorderPredicates();
     parseSelections(query_parts[2]);
     resolveRelationIds();
 }
 
-
+void QueryInfo::reorderPredicates() {
+    sort(predicates_.begin(), predicates_.end(), [&](const PredicateInfo& a,
+    const PredicateInfo& b) -> bool {
+        int a_score = 0, b_score = 0;
+        for(auto& f : filters_) {
+            if(f.filter_column.binding == a.left.binding 
+                || f.filter_column.binding == a.right.binding) {
+                    if (f.comparison == FilterInfo::Comparison::Equal) {
+                        a_score += 1000;
+                    } else {
+                        a_score += 1;
+                    }
+            }
+            if (f.filter_column.binding == b.left.binding
+                || f.filter_column.binding == b.right.binding) {
+                    if (f.comparison == FilterInfo::Comparison::Equal) {
+                        b_score += 1000;
+                    } else {
+                        b_score += 1;
+                    }
+            }
+            return a_score > b_score;
+        }
+        return false;
+    });
+}
 // Reset query info
 void QueryInfo::clear() {
     relation_ids_.clear();
@@ -222,7 +259,7 @@ std::string FilterInfo::dumpSQL() {
     return filter_column.dumpSQL() + static_cast<char>(comparison)
            + std::to_string(constant);
 }
-
+// this function may not
 bool CombinedFilterInfo::mergeCondition(FilterInfo::Comparison comparison, double value) {
     if(comparison == FilterInfo::Comparison::Equal) {
         if(equal.has_value() && value != equal.value()){
@@ -261,7 +298,6 @@ bool CombinedFilterInfo::mergeCondition(FilterInfo::Comparison comparison, doubl
         }
     }
 }
-
 
 // Dump text format
 std::string PredicateInfo::dumpText() {

@@ -1,8 +1,11 @@
 #include "gtest/gtest.h"
 
-#include "joiner.h"
-#include "operators.h"
-#include "utils.h"
+#include "joiner.hpp"
+#include "operators.hpp"
+#include "utils.hpp"
+
+#include <boost/asio/io_service.hpp>
+#include <boost/thread/thread.hpp>
 
 namespace {
 
@@ -10,6 +13,9 @@ class OperatorTest : public testing::Test {
  protected:
   Relation r1 = Utils::createRelation(5, 3);
   Relation r2 = Utils::createRelation(10, 5);
+  boost::asio::io_service ioService;
+  boost::thread_group threadPool;
+  boost::asio::io_service::work work;
 };
 
 TEST_F(OperatorTest, Scan) {
@@ -17,7 +23,7 @@ TEST_F(OperatorTest, Scan) {
   Scan scan(r1, rel_binding);
   scan.require(SelectInfo(rel_binding, 0));
   scan.require(SelectInfo(rel_binding, 2));
-  scan.run();
+  scan.asyncRun();
   auto results = scan.getResults();
   ASSERT_EQ(results.size(), 2ull);
   auto col_id_1 = scan.resolve(SelectInfo{rel_binding, 0});

@@ -1,7 +1,7 @@
 #include <iostream>
 
-#include "relation.h"
-#include "parser.h"
+#include "relation.hpp"
+#include "parser.hpp"
 
 int main(int argc, char *argv[]) {
     std::cout << "Transforms our query format to SQL" << std::endl;

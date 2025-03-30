@@ -1,10 +1,12 @@
-#include "relation.h"
+#include "relation.hpp"
 
 #include <fcntl.h>
 #include <iostream>
 #include <fstream>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <cerrno>
+#include <unistd.h>
 
 // Stores a relation into a binary file
 void Relation::storeRelation(const std::string &file_name) {
@@ -48,6 +50,9 @@ void Relation::dumpSQL(const std::string &file_name, unsigned relation_id) {
 }
 
 void Relation::loadRelation(const char *file_name) {
+    char cwd[1024];
+    getcwd(cwd, sizeof(cwd));
+    std::cout << "Current directory: " << cwd << std::endl;
     int fd = open(file_name, O_RDONLY);
     if (fd == -1) {
         std::cerr << "cannot open " << file_name << std::endl;
