@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # set(CMAKE_C_COMPILER /usr/local/bin/gcc)
 # set(CMAKE_CXX_COMPILER /usr/local/bin/g++)
 
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -fsanitize=address -Wall")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g  -fsanitize=address -Wall")
 
 include_directories(${PROJECT_SOURCE_DIR}/src/include)
 
@@ -41,7 +41,11 @@ target_include_directories(database PUBLIC
 
 add_executable(driver src/main/main.cpp)
 target_link_libraries(driver database boost_system boost_thread)
-
+#add_definitions(-DVERBOSE)
+add_compile_options(
+	-fno-omit-frame-pointer
+        -O1
+    )
 # Interactive command line tool to translate our query format to SQL queries
 add_executable(query2SQL src/main/query2SQL.cpp)
 target_link_libraries(query2SQL database)

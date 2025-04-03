@@ -80,6 +80,13 @@ void Joiner::join(QueryInfo &query, int query_index) {
     // We always start with the first join predicate and append the other joins
     // to it (--> left-deep join trees). You might want to choose a smarter
     // join ordering ...
+    auto& predicates_copy = query.predicates();
+
+    // remove duplicate predicates 
+    std::sort(predicates_copy.begin(), predicates_copy.end());
+    auto last = std::unique(predicates_copy.begin(), predicates_copy.end());
+    predicates_copy.erase(last, predicates_copy.end());
+    
     const auto &firstJoin = query.predicates()[0];
     std::shared_ptr<Operator> left, right;
     left = addScan(used_relations, firstJoin.left, query);
@@ -89,13 +96,6 @@ void Joiner::join(QueryInfo &query, int query_index) {
 
     left->setParent(root);
     right->setParent(root);
-
-    auto& predicates_copy = query.predicates();
-
-    // remove duplicate predicates 
-    std::sort(predicates_copy.begin(), predicates_copy.end());
-    auto last = std::unique(predicates_copy.begin(), predicates_copy.end());
-    predicates_copy.erase(last, predicates_copy.end());
 
     for (unsigned i = 1; i < predicates_copy.size(); ++i) {
         auto &p_info = predicates_copy[i];
@@ -116,12 +116,16 @@ void Joiner::join(QueryInfo &query, int query_index) {
                            query);
             right = root;
             root = std::make_shared<Join>(left, right, p_info);
+            left->setParent(root);
+            right->setParent(root);
             break;
         case QueryGraphProvides::Both:
             // All relations of this join are already used somewhere else in the
             // query. Thus, we have either a cycle in our join graph or more than
             // one join predicate per join.
-            root = std::make_shared<SelfJoin>(root, p_info);
+            left = root;
+            root=make_shared<SelfJoin>(left,p_info);
+            left->setParent(root);
             break;
         case QueryGraphProvides::None:
             // Process this predicate later when we can connect it to the other

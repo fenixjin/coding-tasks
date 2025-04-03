@@ -36,7 +36,7 @@ protected:
     /// Mapping from select info to data
     std::unordered_map<SelectInfo, unsigned> select_to_result_col_id_;
     /// The tmp results
-    std::vector<std::vector<std::vector<uint64_t>>> tmp_results_;
+    //std::vector<std::vector<std::vector<uint64_t>>> tmp_results_;
     /// The result size
     uint64_t result_size_ = 0;
     /// The materialized results
@@ -48,7 +48,12 @@ protected:
     // if 0, all asyncrunning input operator has finished.
     int pendingAsyncOperator =-1;
 
-
+#ifdef VERBOSE
+    unsigned operatorIndex;
+    unsigned queryIndex;
+    void setQeuryIndex(unsigned qI) { queryIndex = qI; }
+    void setOperatorIndex(unsigned oI) { operatorIndex = oI; }
+#endif
     /// only call it if pendingAsyncOperator=0, and can getResults()
     virtual void createAsyncTasks(boost::asio::io_service& ioService) { throw; }
 
@@ -245,7 +250,7 @@ private:
 public:
     /// The constructor
     SelfJoin(std::shared_ptr<Operator> &input, PredicateInfo &p_info)
-        : input_(std::move(input)), p_info_(p_info) {};
+        : input_(input), p_info_(p_info) {};
     /// Require a column and add it to results
     bool require(SelectInfo info) override;
     /// AsyncRun

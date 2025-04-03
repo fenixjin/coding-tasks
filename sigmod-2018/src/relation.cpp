@@ -52,7 +52,7 @@ void Relation::dumpSQL(const std::string &file_name, unsigned relation_id) {
 void Relation::loadRelation(const char *file_name) {
     char cwd[1024];
     getcwd(cwd, sizeof(cwd));
-    std::cout << "Current directory: " << cwd << std::endl;
+//std::cout << "Current directory: " << cwd << std::endl;
     int fd = open(file_name, O_RDONLY);
     if (fd == -1) {
         std::cerr << "cannot open " << file_name << std::endl;

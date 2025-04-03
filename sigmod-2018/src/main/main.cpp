@@ -10,9 +10,9 @@ int main(int argc, char *argv[]) {
     Joiner joiner(THREAD_NUM);
     namespace fs = std::filesystem;
 
-    fs::path current_dir = fs::current_path();
-    fs::path parent_dir = current_dir.parent_path();
-    fs::current_path(parent_dir);
+    // fs::path current_dir = fs::current_path();
+    // fs::path parent_dir = current_dir.parent_path();
+    // fs::current_path(parent_dir);
 
     // Read join relations
     std::string line;
@@ -30,7 +30,9 @@ int main(int argc, char *argv[]) {
             joiner.waitAsyncJoins();
             auto results = joiner.getAsyncJoinResults(); // result strings vector
             for (auto& result : results)
+            {
                 cout << result;
+            }
             continue;
         } 
         joiner.createAsyncQueryTask(line);

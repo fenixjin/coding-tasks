@@ -14,7 +14,7 @@
 const unsigned long MAX_FAILED_QUERIES = 100;
 
 // Time to wait between initializing and issuing queries
-const unsigned long WAITING_TIME_SECS = 5;
+const unsigned long WAITING_TIME_SECS = 30;
 
 static void usage() {
     std::cerr

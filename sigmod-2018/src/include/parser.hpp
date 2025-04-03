@@ -11,10 +11,11 @@
 struct SelectInfo {
     /// Relation id
     RelationId rel_id;
-    /// Binding for the relation
-    unsigned binding;
+    
     /// Column id
     unsigned col_id;
+    /// Binding for the relation
+    unsigned binding;
 
     /// The constructor
     SelectInfo(RelationId rel_id, unsigned b, unsigned col_id)
@@ -98,7 +99,15 @@ struct CombinedFilterInfo {
 
     CombinedFilterInfo() = default;
 
-    CombinedFilterInfo(SelectInfo& filter_col) : filter_column(filter_col) {};
+    CombinedFilterInfo(SelectInfo& filter_col, FilterInfo::Comparison i, double value) : filter_column(filter_col) {
+        if (i == FilterInfo::Comparison::Less) {
+            less = value;
+        } else if (i == FilterInfo::Comparison::Greater) {
+            greater = value;
+        } else {
+            equal = value;
+        }
+    };
 };
 
 struct PredicateInfo {

@@ -101,19 +101,18 @@ void QueryInfo::parsePredicates(std::string &raw_predicates) {
         parsePredicate(raw_predicate);
     }
     // propagate filter to make temp table smaller
-    for(int i = 0; i < filters_.size(); i++) {
-        auto& f = filters_[i];
+    for(int i = 0; i < filters_.size(); i++) { 
         for(auto& predicate : predicates_) {
-            if(f.filter_column == predicate.left) {
-                FilterInfo new_filter{predicate.right, f.constant, f.comparison};
-                if (std::find(filters_.begin(), filters_.end(), new_filter) != filters_.end()) {
-                    filters_.emplace_back(new_filter);
+            if(filters_[i].filter_column == predicate.left) {
+                FilterInfo new_filter{predicate.right, filters_[i].constant, filters_[i].comparison};
+                if (std::find(filters_.begin(), filters_.end(), new_filter) == filters_.end()) {
+                    filters_.push_back(std::move(new_filter));
                 }
             }
-            if(f.filter_column == predicate.right) {
-                FilterInfo new_filter{predicate.left, f.constant, f.comparison};
-                if (std::find(filters_.begin(), filters_.end(), new_filter) != filters_.end()) {
-                    filters_.emplace_back(new_filter);
+            if(filters_[i].filter_column == predicate.right) {
+                FilterInfo new_filter{predicate.left, filters_[i].constant, filters_[i].comparison};
+                if (std::find(filters_.begin(), filters_.end(), new_filter) == filters_.end()) {
+                    filters_.push_back(std::move(new_filter));
                 }
             }
         }
@@ -129,10 +128,11 @@ void QueryInfo::parsePredicates(std::string &raw_predicates) {
                     setIllegalQuery();
                     return;
                 }
+                break;
             }
         }
         if (!found) {
-            col_2_combine_filters.emplace_back(f.filter_column);
+            col_2_combine_filters.emplace_back(f.filter_column, f.comparison, f.constant);
         }
     }
     filters_.clear();
