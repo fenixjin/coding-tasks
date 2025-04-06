@@ -77,6 +77,7 @@ void Joiner::join(QueryInfo &query, int query_index) {
     }
     std::set<unsigned> used_relations;
 
+
     // We always start with the first join predicate and append the other joins
     // to it (--> left-deep join trees). You might want to choose a smarter
     // join ordering ...
@@ -97,6 +98,11 @@ void Joiner::join(QueryInfo &query, int query_index) {
     left->setParent(root);
     right->setParent(root);
 
+    unsigned op_idx = 0;
+    left->set_op_idx(op_idx++);
+    right->set_op_idx(op_idx++);
+    root->set_op_idx(op_idx++);
+
     for (unsigned i = 1; i < predicates_copy.size(); ++i) {
         auto &p_info = predicates_copy[i];
         auto &left_info = p_info.left;
@@ -109,6 +115,8 @@ void Joiner::join(QueryInfo &query, int query_index) {
             root = std::make_shared<Join>(left, right, p_info);
             left->setParent(root);
             right->setParent(root);
+            right->set_op_idx(op_idx++);
+            root->set_op_idx(op_idx++);
             break;
         case QueryGraphProvides::Right:
             left = addScan(used_relations,
@@ -126,6 +134,7 @@ void Joiner::join(QueryInfo &query, int query_index) {
             left = root;
             root=make_shared<SelfJoin>(left,p_info);
             left->setParent(root);
+            root->set_op_idx(op_idx++);
             break;
         case QueryGraphProvides::None:
             // Process this predicate later when we can connect it to the other

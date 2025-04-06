@@ -12,6 +12,7 @@
 #include <cassert>
 #include <boost/asio/io_service.hpp>
 #include <boost/thread/thread.hpp>
+#include <chrono>
 
 #include "relation.hpp"
 #include "parser.hpp"
@@ -57,10 +58,7 @@ protected:
     /// only call it if pendingAsyncOperator=0, and can getResults()
     virtual void createAsyncTasks(boost::asio::io_service& ioService) { throw; }
 
-
-
     virtual void finishAsyncRun(boost::asio::io_service& ioService, bool startParentAsync=false); 
-
 
 public:
     /// The destructor
@@ -69,6 +67,7 @@ public:
     virtual void printAsyncInfo() = 0;
 
     bool is_stopped = false;
+    int op_idx;
 
     /// Require a column and add it to results
     virtual bool require(SelectInfo info) = 0;
@@ -82,6 +81,10 @@ public:
 
     uint64_t result_size() const {
         return result_size_;
+    }
+
+    void set_op_idx(int a) {
+        op_idx = a;
     }
 
     /// Get  materialized results
@@ -132,7 +135,7 @@ private:
     void copy2Result(uint64_t id);
     int pendingTask = -1;
     
-    unsigned minTuplesPerTask = 1000;
+    unsigned minTuplesPerTask = 2500;
 
     void filterTask(boost::asio::io_service* ioService, int taskIndex, uint64_t start, uint64_t length);
 

@@ -3,6 +3,7 @@
 
 #include "joiner.hpp"
 #include "parser.hpp"
+#include "chrono.hpp"
 
 using namespace std;
 
@@ -23,7 +24,7 @@ int main(int argc, char *argv[]) {
 
     // Preparation phase (not timed)
     // Build histograms, indexes,...
-
+    BarrierProfiler::getInstance().setOutputFile("barrier_stats.txt");
     QueryInfo i;
     while (getline(std::cin, line)) {
         if (line == "F") { // End of a batch
@@ -33,9 +34,12 @@ int main(int argc, char *argv[]) {
             {
                 cout << result;
             }
+            BarrierProfiler::getInstance().printStats();
             continue;
         } 
         joiner.createAsyncQueryTask(line);
+        
+        
     }
 
     return 0;

@@ -1,12 +1,12 @@
 #include "operators.hpp"
 #include "joiner.hpp"
+#include "chrono.hpp"
 #include <cassert>
 
 // Get materialized results
 std::vector<Column<uint64_t>>& Operator::getResults() {
     return results;
 }
-
 void Operator::finishAsyncRun(boost::asio::io_service& ioService, bool startParentAsync) {
     is_stopped = true;
     if (auto p = parent.lock()) {
@@ -112,7 +112,10 @@ void FilterScan::createAsyncTasks(boost::asio::io_service& ioService) {
     #endif  
     //const uint64_t partitionSize = L2_SIZE/2;
     //const unsigned taskNum = CNT_PARTITIONS(relation.size*relation.columns.size()*8, partitionSize);
+    
     __sync_synchronize();
+    auto start_t = std::chrono::high_resolution_clock::now();
+    BarrierProfiler::getInstance().record_start("filterScan", op_idx, start_t);
     if (is_stopped) {
 #ifdef ANALYZE_STOP
         __sync_fetch_and_add(&fsStopCnt, 1);
@@ -121,6 +124,7 @@ void FilterScan::createAsyncTasks(boost::asio::io_service& ioService) {
         finishAsyncRun(ioService, true);
         return;
     }
+
     int cnt_task = THREAD_NUM;
     uint64_t size = relation_.size();
     if (infos.size() == 1){
@@ -134,8 +138,8 @@ void FilterScan::createAsyncTasks(boost::asio::io_service& ioService) {
         }
     }
 
-    uint64_t taskLength = size/cnt_task;
-    uint64_t rest = size%cnt_task;
+    uint64_t taskLength = size / cnt_task;
+    uint64_t rest = size % cnt_task;
     
     if (taskLength < minTuplesPerTask) {
         cnt_task = size/minTuplesPerTask;
@@ -155,7 +159,6 @@ void FilterScan::createAsyncTasks(boost::asio::io_service& ioService) {
     for (int i=0; i<cnt_task; i++) {
         tmpResults.emplace_back();
     }
-    
     __sync_synchronize(); 
     // uint64_t length = partitionSize/(relation.columns.size()*8); 
     uint64_t start = 0;
@@ -174,7 +177,6 @@ void FilterScan::filterTask(boost::asio::io_service* ioService, int taskIndex, u
     vector<vector<uint64_t>>& localResults = tmpResults[taskIndex];
     unsigned colSize = input_data_.size();
     unordered_map<uint64_t, unsigned> cntMap;
-    
     __sync_synchronize();
     if (is_stopped) {
 #ifdef ANALYZE_STOP
@@ -219,6 +221,8 @@ fs_finish:
         for (unsigned cId=0;cId<colSize;++cId) {
             results[cId].fix();
         }
+        auto end_t = std::chrono::high_resolution_clock::now();
+        BarrierProfiler::getInstance().record_finish("filterScan", op_idx, end_t);
         finishAsyncRun(*ioService, true);
     }
 }
@@ -328,7 +332,6 @@ void Join::createAsyncTasks(boost::asio::io_service& ioService) {
     // currently there is no multithread for join
     // all steps of join will run in this function
     assert (pendingAsyncOperator==0);
-    
     __sync_synchronize();
     if (is_stopped) {
 #ifdef ANALYZE_STOP
@@ -338,6 +341,8 @@ void Join::createAsyncTasks(boost::asio::io_service& ioService) {
         finishAsyncRun(ioService, true);
         return;
     }
+    auto start_t = std::chrono::high_resolution_clock::now();
+    BarrierProfiler::getInstance().record_start("join", op_idx, start_t);
     // Use smaller input_ for build
     if (left_->result_size() > right_->result_size()) {
         swap(left_,right_);
@@ -384,14 +389,18 @@ void Join::createAsyncTasks(boost::asio::io_service& ioService) {
     auto left_col_id = left_->resolve(p_info_.left);
     auto right_col_id = right_->resolve(p_info_.right);
     // Build phase
+    auto start_t1 = std::chrono::high_resolution_clock::now();
+    BarrierProfiler::getInstance().record_start("build", op_idx, start_t);
     auto l_key_col_iter = left_input_data[left_col_id].begin(0);
     hash_table_.reserve(left_->result_size() * 2);
     for (uint64_t i = 0, limit = i + left_->result_size(); i != limit; i++, ++l_key_col_iter) {
         //std::cout << "inserted " << *l_key_col_iter << " " << i << endl;
         hash_table_.emplace(*l_key_col_iter, i);
     }
+    auto end_t1 = std::chrono::high_resolution_clock::now();
+    BarrierProfiler::getInstance().record_finish("build", op_idx, end_t1);
+    BarrierProfiler::getInstance().record_start("probe", op_idx, end_t1);
     // Probe phase
-
     auto r_key_col_iter = right_input_data[right_col_id].begin(0);
     int match_cnt = 0;
     for (uint64_t i = 0, limit = i + right_->result_size(); i != limit; i++, ++r_key_col_iter) {
@@ -420,6 +429,9 @@ void Join::createAsyncTasks(boost::asio::io_service& ioService) {
         results[i].fix();
     }
     __sync_fetch_and_add(&result_size_, tmp_results[0].size());
+    auto end_t = std::chrono::high_resolution_clock::now();
+    BarrierProfiler::getInstance().record_finish("join", op_idx, end_t);
+    BarrierProfiler::getInstance().record_finish("probe", op_idx, end_t);
     finishAsyncRun(ioService,true);
     // UNIFINISHED multithread version
     // int cnt_task = THREAD_NUM;
@@ -566,9 +578,12 @@ void SelfJoin::selfJoinTask(boost::asio::io_service* ioService, int taskIndex, u
 
     int remainder = __sync_sub_and_fetch(&pendingTask, 1);
     if (UNLIKELY(remainder == 0)) {
+        
         for (unsigned cId=0;cId<colSize;++cId) {
             results[cId].fix();
         }
+        auto end_t = std::chrono::high_resolution_clock::now();
+        BarrierProfiler::getInstance().record_finish("selfJoin", op_idx, end_t);
         finishAsyncRun(*ioService, true);
         //input = nullptr;
     }
@@ -579,6 +594,8 @@ void SelfJoin::createAsyncTasks(boost::asio::io_service& ioService) {
 #ifdef VERBOSE
     cout << "SelfJoin("<< queryIndex << "," << operatorIndex <<")::createAsyncTasks" << endl;
 #endif
+    auto start_t = std::chrono::high_resolution_clock::now();
+    BarrierProfiler::getInstance().record_start("selfJoin", op_idx, start_t);
     uint64_t result_size = input_->result_size();
     if (input_->result_size() == 0) {
         finishAsyncRun(ioService, true);
@@ -667,7 +684,10 @@ void Checksum::createAsyncTasks(boost::asio::io_service& ioService) {
     cout << "Checksum(" << queryIndex << "," << operatorIndex <<  ") input size: " << input_->result_size() << " cntTask: " << cnt_task << " length: " << taskLength << " rest: " << rest <<  endl;
 #endif
     pending_task = cnt_task; 
+    auto start_t = std::chrono::high_resolution_clock::now();
     __sync_synchronize();
+    auto end_t = std::chrono::high_resolution_clock::now();
+    BarrierProfiler::getInstance().record("checksum_create", end_t - start_t);
     uint64_t start = 0;
     for (int i=0; i<cnt_task; i++) {
         uint64_t length = taskLength;
